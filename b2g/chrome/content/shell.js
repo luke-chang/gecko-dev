@@ -562,7 +562,7 @@ var shell = {
       debug("Top level window for display id: " + aDisplay.id + ' has been opened.');
       return;
     }
-    
+
     // FIXME: Do not use display type as display Id.
     let options = 'chrome,dialog=no,close,resizable,scrollbars,extrachrome,' +
                   'mozDisplayId='+aDisplay.id;
@@ -585,15 +585,44 @@ var shell = {
     }
   },
 
+  displayList: [],
+
   handleDisplayChangeEvent: function(aSubject, aTopic, aData) {
     let display = aSubject.QueryInterface(Ci.nsIDisplayInfo);
 
     debug('handleDisplayChangeEvent: ' + JSON.stringify(display));
 
     if (display.connected) {
+      this.displayList.push(display);
       this.openTopLevelWindow(display);
     } else {
+      this.displayList = this.displayList.filter(function(d) {
+        return d.id != display.id;
+      });
       this.closeTopLevelWindow(display);
+    }
+  },
+
+  handleCustomEvent: function(detail) {
+    switch(detail.type) {
+      case 'get-display-list':
+        try {
+          this.sendChromeEvent({
+            type: 'get-display-list-success',
+            display: this.displayList.map(function(d) {
+              return {
+                id: d.id,
+                name: d.name || ('External Display #' + d.id)
+              };
+            })
+          });
+        } catch (e) {
+          this.sendChromeEvent({
+            type: 'get-display-list-error',
+            error: String(e)
+          });
+        }
+        break;
     }
   },
 
@@ -748,6 +777,9 @@ var CustomEventManager = {
         break;
       case 'do-command':
         DoCommandHelper.handleEvent(detail.cmd);
+        break;
+      case 'get-display-list':
+        shell.handleCustomEvent(detail);
         break;
     }
   }
