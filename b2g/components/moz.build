@@ -73,6 +73,7 @@ EXTRA_JS_MODULES += [
     'SignInToWebsite.jsm',
     'SystemAppProxy.jsm',
     'TelURIParser.jsm',
+    'TVRemoteControlService.jsm',
     'WebappsUpdater.jsm',
 ]
 

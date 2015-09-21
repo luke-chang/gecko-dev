@@ -1,0 +1,6 @@
+RESOURCE_FILES.tvrc += [
+    'ajax.sjs',
+    'client.html',
+    'client.js',
+]
+
