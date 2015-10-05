@@ -33,22 +33,22 @@ Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 const FileInputStream = CC("@mozilla.org/network/file-input-stream;1",
-                           "nsIFileInputStream",
-                           "init");
+                          "nsIFileInputStream",
+                          "init");
 var BinaryInputStream = CC("@mozilla.org/binaryinputstream;1",
-                           "nsIBinaryInputStream",
-                           "setInputStream");
+                          "nsIBinaryInputStream",
+                          "setInputStream");
 var BinaryOutputStream = CC("@mozilla.org/binaryoutputstream;1",
-                            "nsIBinaryOutputStream",
-                            "setOutputStream");
+                          "nsIBinaryOutputStream",
+                          "setOutputStream");
 const ScriptableInputStream = CC("@mozilla.org/scriptableinputstream;1",
-                                 "nsIScriptableInputStream",
-                                 "init");
+                          "nsIScriptableInputStream",
+                          "init");
 
 var gThreadManager = null;
 
-const TVRC_STATIC = ['/client.html', '/client.js'];
-const TVRC_SJS = ['/ajax.sjs'];
+const TVRC_STATIC = ['/client.html', '/vendor/jquery.min.js', '/js/touch_panel.js', '/js/client.js'];
+const TVRC_SJS = ['/ajax.sjs', 'pairing.sjs'];
 
 // For b2g-destkop, you need to fill ip address here to start http server correctly
 const DEFAULT_IP_ADDR = "10.247.26.32";
@@ -69,178 +69,11 @@ function NS_ASSERT(cond, msg)
   }
 }
 
-function handleStaticRequest (request, response)
-{
-  const PR_RDONLY = 0x01;
-  const PERMS_READONLY = (4 << 6) | (4 << 3) | 4;
-
-  var ioService = Components.classes["@mozilla.org/network/io-service;1"]
-                  .getService(Components.interfaces.nsIIOService);
-  var channel = ioService.newChannel("resource://gre/res/tvrc" + request.path, null, null);
-  var fis = channel.open();
-
-  var offset = 0;
-  var count = fis.available();
-
-  response.setHeader("Content-Type", "text/html;charset=utf-8", false);
-  //maybeAddHeaders(file, metadata, response);
-  response.setHeader("Content-Length", "" + count, false);
-
-  //offset = offset || 0;
-  //count  = count || file.fileSize;
-
-  //NS_ASSERT(offset === 0 || offset < file.fileSize, "bad offset");
-  //NS_ASSERT(count >= 0, "bad count");
-  //NS_ASSERT(offset + count <= file.fileSize, "bad total data size");
-
-  try
-  {
-    if (offset !== 0)
-    {
-      // Seek (or read, if seeking isn't supported) to the correct offset so
-      // the data sent to the client matches the requested range.
-      if (fis instanceof Ci.nsISeekableStream)
-        fis.seek(Ci.nsISeekableStream.NS_SEEK_SET, offset);
-      else
-        new ScriptableInputStream(fis).read(offset);
-    }
-  }
-  catch (e)
-  {
-    fis.close();
-    throw e;
-  }
-
-  let writeMore = function () {
-    gThreadManager.currentThread
-        .dispatch(writeData, Ci.nsIThread.DISPATCH_NORMAL);
-  }
-
-  var input = new BinaryInputStream(fis);
-  var output = new BinaryOutputStream(response.bodyOutputStream);
-  var writeData =
-    {
-      run: function()
-      {
-        var chunkSize = Math.min(65536, count);
-        count -= chunkSize;
-        NS_ASSERT(count >= 0, "underflow");
-
-        try
-        {
-          var data = input.readByteArray(chunkSize);
-          NS_ASSERT(data.length === chunkSize,
-                    "incorrect data returned?  got " + data.length +
-                    ", expected " + chunkSize);
-          output.writeByteArray(data, data.length);
-          if (count === 0)
-          {
-            fis.close();
-            response.finish();
-          }
-          else
-          {
-            writeMore();
-          }
-        }
-        catch (e)
-        {
-          try
-          {
-            fis.close();
-          }
-          finally
-          {
-            response.finish();
-          }
-          throw e;
-        }
-      }
-    };
-
-  writeMore();
-
-  // Now that we know copying will start, flag the response as async.
-  response.processAsync();
-}
-
-function handleSJSRequest (request, response)
-{
-  var ioService = Components.classes["@mozilla.org/network/io-service;1"]
-                  .getService(Components.interfaces.nsIIOService);
-  var channel = ioService.newChannel("resource://gre/res/tvrc" + request.path, null, null);
-  var fis = channel.open();
-
-  try
-  {
-    var sis = new ScriptableInputStream(fis);
-    var s = Cu.Sandbox (Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal));
-    s.importFunction(dump, "dump");
-    s.importFunction(atob, "atob");
-    s.importFunction(btoa, "btoa");
-
-    // Define a basic key-value state-preservation API across requests, with
-    // keys initially corresponding to the empty string.
-    var self = TVRemoteControlService;
-    var path = request.path;
-    s.importFunction(function getState(k)
-    {
-      return self._getState(path, k);
-    });
-    s.importFunction(function setState(k, v)
-    {
-      self._setState(path, k, v);
-    });
-
-    try
-    {
-      // Alas, the line number in errors dumped to console when calling the
-      // request handler is simply an offset from where we load the SJS file.
-      // Work around this in a reasonably non-fragile way by dynamically
-      // getting the line number where we evaluate the SJS file.  Don't
-      // separate these two lines!
-      var line = new Error().lineNumber;
-      Cu.evalInSandbox(sis.read(fis.available()), s, "latest");
-    }
-    catch (e)
-    {
-      dumpn("*** syntax error in SJS at " + channel.URI.path + ": " + e);
-      throw "500 Internal Server Error";
-    }
-
-    try
-    {
-      s.handleRequest(request, response);
-    }
-    catch (e)
-    {
-      dump("*** error running SJS at " + channel.URI.path + ": " +
-           e + " on line " +
-           (e instanceof Error
-            ? e.lineNumber + " in httpd.js"
-            : (e.lineNumber - line)) + "\n");
-      throw "500 Internal Server Error";
-    }
-  }
-  finally
-  {
-    fis.close();
-  }
-}
-
-function handleRequest (request, response)
-{
-  if (TVRC_STATIC.indexOf(request.path) >= 0)
-    handleStaticRequest(request, response);
-  else if (TVRC_SJS.indexOf(request.path) >= 0)
-    handleSJSRequest(request, response);
-  else
-    throw '500 Internal Server Error';
-}
-
 this.TVRemoteControlService = {
   _httpServer: null,
   _state: {},
+  _pin: null,
+  _uuids: null, // uuid : expire_timestamp
 
   init: function() {
     debug ("init");
@@ -250,10 +83,14 @@ this.TVRemoteControlService = {
     gThreadManager = Cc["@mozilla.org/thread-manager;1"].getService();
 
     try {
-      this._httpServer.registerPrefixHandler("/",  function(request, response) {
-        handleRequest(request, response);
-        });
+      this._httpServer.registerPrefixHandler("/", function(request, response) {
+        TVRemoteControlService._handleRequest(request, response);
+      });
     } catch (e) { debug (e.message);}
+
+    this._uuids = new Map();
+    // TODO: Read UUID from persistant setting storage
+    this._generateUUID();
   },
 
   start: function(ipaddr, port) {
@@ -328,6 +165,225 @@ this.TVRemoteControlService = {
     if (!(path in state))
       state[path] = {};
     state[path][k] = v;
+  },
+
+  _generateUUID: function() {
+    var uuidGenerator = Components.classes["@mozilla.org/uuid-generator;1"]
+                    .getService(Components.interfaces.nsIUUIDGenerator);
+    var uuid = uuidGenerator.generateUUID();
+    var uuidString = uuid.toString();
+    this._uuids.set (uuidString, (new Date().getTime())+ 90*24*60*60*1000);
+  },
+
+  _isValidUUID: function(uuid) {
+    return this._uuids.has(uuid);
+  },
+
+  _updateUUID: function(uuid, timestamp) {
+    if (this.uuids.has(uuid)) {
+      this._uuids.set(uuid, timestamp);
+    }
+  },
+
+  _clearUUID: function(uuid) {
+    if (this._uuids.has(uuid)) {
+      this._uuids.delete(uuid);
+    }
+  },
+
+  _clearAllUUID: function() {
+    this._uuids.clear();
+  },
+
+  _zeroFill: function(number, width) {
+    width -= number.toString().length;
+    if ( width > 0 )
+    {
+      return new Array( width + (/\./.test( number ) ? 2 : 1) ).join( '0' ) + number;
+    }
+    return number + ""; // always return a string
+  },
+
+  _generatePIN: function() {
+    this._pin = this._zeroFill (Math.floor(Math.random() * 10000), 4);
+    return this._pin;
+  },
+
+  _getPIN: function() {
+    return this._pin;
+  },
+
+  _clearPIN: function() {
+    this._pin = null;
+  },
+
+  _handleRequest: function(request, response)
+  {
+    if (TVRC_STATIC.indexOf(request.path) >= 0)
+      this._handleStaticRequest(request, response);
+    else if (TVRC_SJS.indexOf(request.path) >= 0)
+      this._handleSJSRequest(request, response);
+    else
+      throw '500 Internal Server Error';
+  },
+
+  _handleStaticRequest: function(request, response)
+  {
+    const PR_RDONLY = 0x01;
+    const PERMS_READONLY = (4 << 6) | (4 << 3) | 4;
+
+    var ioService = Components.classes["@mozilla.org/network/io-service;1"]
+                    .getService(Components.interfaces.nsIIOService);
+    var channel = ioService.newChannel("app://remote-control.gaiamobile.org/client" + request.path, null, null);
+    var fis = channel.open();
+
+    var offset = 0;
+    var count = fis.available();
+
+    response.setHeader("Content-Type", "text/html;charset=utf-8", false);
+    //maybeAddHeaders(file, metadata, response);
+    response.setHeader("Content-Length", "" + count, false);
+
+    //offset = offset || 0;
+    //count  = count || file.fileSize;
+
+    //NS_ASSERT(offset === 0 || offset < file.fileSize, "bad offset");
+    //NS_ASSERT(count >= 0, "bad count");
+    //NS_ASSERT(offset + count <= file.fileSize, "bad total data size");
+
+    try
+    {
+      if (offset !== 0)
+      {
+        // Seek (or read, if seeking isn't supported) to the correct offset so
+        // the data sent to the client matches the requested range.
+        if (fis instanceof Ci.nsISeekableStream)
+          fis.seek(Ci.nsISeekableStream.NS_SEEK_SET, offset);
+        else
+          new ScriptableInputStream(fis).read(offset);
+      }
+    }
+    catch (e)
+    {
+      fis.close();
+      throw e;
+    }
+
+    let writeMore = function () {
+      gThreadManager.currentThread
+          .dispatch(writeData, Ci.nsIThread.DISPATCH_NORMAL);
+    }
+
+    var input = new BinaryInputStream(fis);
+    var output = new BinaryOutputStream(response.bodyOutputStream);
+    var writeData =
+      {
+        run: function()
+        {
+          var chunkSize = Math.min(65536, count);
+          count -= chunkSize;
+          NS_ASSERT(count >= 0, "underflow");
+
+          try
+          {
+            var data = input.readByteArray(chunkSize);
+            NS_ASSERT(data.length === chunkSize,
+                      "incorrect data returned?  got " + data.length +
+                      ", expected " + chunkSize);
+            output.writeByteArray(data, data.length);
+            if (count === 0)
+            {
+              fis.close();
+              response.finish();
+            }
+            else
+            {
+              writeMore();
+            }
+          }
+          catch (e)
+          {
+            try
+            {
+              fis.close();
+            }
+            finally
+            {
+              response.finish();
+            }
+            throw e;
+          }
+        }
+      };
+
+    writeMore();
+
+    // Now that we know copying will start, flag the response as async.
+    response.processAsync();
+  },
+
+  _handleSJSRequest: function(request, response)
+  {
+    var ioService = Components.classes["@mozilla.org/network/io-service;1"]
+                    .getService(Components.interfaces.nsIIOService);
+    var channel = ioService.newChannel("resource://gre/res/tvrc" + request.path, null, null);
+    var fis = channel.open();
+
+    try
+    {
+      var sis = new ScriptableInputStream(fis);
+      var s = Cu.Sandbox (Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal));
+      s.importFunction(dump, "dump");
+      s.importFunction(atob, "atob");
+      s.importFunction(btoa, "btoa");
+
+      // Define a basic key-value state-preservation API across requests, with
+      // keys initially corresponding to the empty string.
+      var self = TVRemoteControlService;
+      var path = request.path;
+      s.importFunction(function getState(k)
+      {
+        return self._getState(path, k);
+      });
+      s.importFunction(function setState(k, v)
+      {
+        self._setState(path, k, v);
+      });
+
+      try
+      {
+        // Alas, the line number in errors dumped to console when calling the
+        // request handler is simply an offset from where we load the SJS file.
+        // Work around this in a reasonably non-fragile way by dynamically
+        // getting the line number where we evaluate the SJS file.  Don't
+        // separate these two lines!
+        var line = new Error().lineNumber;
+        Cu.evalInSandbox(sis.read(fis.available()), s, "latest");
+      }
+      catch (e)
+      {
+        dumpn("*** syntax error in SJS at " + channel.URI.path + ": " + e);
+        throw "500 Internal Server Error";
+      }
+
+      try
+      {
+        s.handleRequest(request, response);
+      }
+      catch (e)
+      {
+        dump("*** error running SJS at " + channel.URI.path + ": " +
+             e + " on line " +
+             (e instanceof Error
+              ? e.lineNumber + " in httpd.js"
+              : (e.lineNumber - line)) + "\n");
+        throw "500 Internal Server Error";
+      }
+    }
+    finally
+    {
+      fis.close();
+    }
   },
 };
 
