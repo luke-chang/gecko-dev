@@ -35,10 +35,10 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 const FileInputStream = CC("@mozilla.org/network/file-input-stream;1",
                           "nsIFileInputStream",
                           "init");
-var BinaryInputStream = CC("@mozilla.org/binaryinputstream;1",
+const BinaryInputStream = CC("@mozilla.org/binaryinputstream;1",
                           "nsIBinaryInputStream",
                           "setInputStream");
-var BinaryOutputStream = CC("@mozilla.org/binaryoutputstream;1",
+const BinaryOutputStream = CC("@mozilla.org/binaryoutputstream;1",
                           "nsIBinaryOutputStream",
                           "setOutputStream");
 const ScriptableInputStream = CC("@mozilla.org/scriptableinputstream;1",
@@ -47,8 +47,8 @@ const ScriptableInputStream = CC("@mozilla.org/scriptableinputstream;1",
 
 var gThreadManager = null;
 
-const TVRC_STATIC = ['/client.html', '/vendor/jquery.min.js', '/js/touch_panel.js', '/js/client.js'];
-const TVRC_SJS = ['/ajax.sjs', 'pairing.sjs'];
+const TVRC_STATIC_BLACKLIST = ['/client.html', '/pairing.html'];
+const TVRC_SJS = ['/ajax.sjs', '/pairing.sjs'];
 
 // For b2g-destkop, you need to fill ip address here to start http server correctly
 const DEFAULT_IP_ADDR = "10.247.26.32";
@@ -90,7 +90,6 @@ this.TVRemoteControlService = {
 
     this._uuids = new Map();
     // TODO: Read UUID from persistant setting storage
-    this._generateUUID();
   },
 
   start: function(ipaddr, port) {
@@ -217,14 +216,45 @@ this.TVRemoteControlService = {
     this._pin = null;
   },
 
+  _isValidPath: function(path) {
+    debug (path);
+    if (path == '/') return true;
+    if (path.indexOf("..") > -1) return false;
+
+    // Using channel.open to check if static file exists
+    try {
+      var ioService = Components.classes["@mozilla.org/network/io-service;1"]
+                    .getService(Components.interfaces.nsIIOService);
+      var channel = ioService.newChannel("app://remote-control.gaiamobile.org/client" + path, null, null);
+      var fis = channel.open();
+      fis.close();
+      return true;
+    } catch (e) { debug (e.message); }
+    return false;
+  },
+
   _handleRequest: function(request, response)
   {
-    if (TVRC_STATIC.indexOf(request.path) >= 0)
-      this._handleStaticRequest(request, response);
+    if (TVRC_STATIC_BLACKLIST.indexOf(request.path) >= 0)
+      throw '500 Internal Server Error';
     else if (TVRC_SJS.indexOf(request.path) >= 0)
       this._handleSJSRequest(request, response);
+    else if (this._isValidPath(request.path))
+      this._handleStaticRequest(request, response);
     else
       throw '500 Internal Server Error';
+  },
+
+  _checkPathFromCookie: function(request) {
+    /*
+      if (request.path=='/' && request.hasHeader("Cookie")) {
+         return this._isValidUUID (request.getHeader("Cookie")) ? "/client.html" : "/pairing.html";
+    */
+     if (request.path=='/' ) {
+         return "/client.html";
+     } else {
+       return request.path;
+     }
   },
 
   _handleStaticRequest: function(request, response)
@@ -234,7 +264,8 @@ this.TVRemoteControlService = {
 
     var ioService = Components.classes["@mozilla.org/network/io-service;1"]
                     .getService(Components.interfaces.nsIIOService);
-    var channel = ioService.newChannel("app://remote-control.gaiamobile.org/client" + request.path, null, null);
+    var path = this._checkPathFromCookie(request);
+    var channel = ioService.newChannel("app://remote-control.gaiamobile.org/client" + path, null, null);
     var fis = channel.open();
 
     var offset = 0;
