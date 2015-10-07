@@ -54,6 +54,15 @@ const TVRC_SJS = ['/ajax.sjs', '/pairing.sjs'];
 const DEFAULT_IP_ADDR = "10.247.26.32";
 const DEFAULT_PORT = 8080;
 
+const TVRC_SETTINGS_DEVICES = 'remote-control.authorized-devices';
+const TVRC_SETTINGS_ENABLED = 'remote-control.enabled';
+const TVRC_SETTINGS_SERVERIP = 'remote-control.server-ip';
+const TVRC_SETTINGS_PAIRING = 'remote-control.pairing-required';
+
+XPCOMUtils.defineLazyServiceGetter(this, "SettingsService",
+                                   "@mozilla.org/settingsService;1",
+                                   "nsISettingsService");
+
 function NS_ASSERT(cond, msg)
 {
   if (DEBUG && !cond)
@@ -88,8 +97,25 @@ this.TVRemoteControlService = {
       });
     } catch (e) { debug (e.message);}
 
-    this._uuids = new Map();
-    // TODO: Read UUID from persistant setting storage
+    this._uuids = {};
+
+    let callback = {
+      handle: function(name, result) {
+        TVRemoteControlService._uuids = JSON.parse (result);
+        TVRemoteControlService._clearAllUUID();
+      },
+
+      handleError: function(name) {
+        debug ("error get settings:" + name);
+      },
+    };
+
+    var lock = SettingsService.createLock();
+    lock.get (TVRC_SETTINGS_DEVICES, callback);
+
+    var observerService = Components.classes["@mozilla.org/observer-service;1"]
+                      .getService(Components.interfaces.nsIObserverService);
+    observerService.addObserver (this, "mozsettings-changed", false);
   },
 
   start: function(ipaddr, port) {
@@ -145,6 +171,15 @@ this.TVRemoteControlService = {
       observerService.removeObserver (this, "network-active-changed");
 
       this.start(ipAddresses["value"]);
+    } else if (topic == "mozsettings-changed" &&  subject) {
+      if ("wrappedJSObject" in subject) {
+        subject = subject.wrappedJSObject;
+      }
+
+      if (subject["key"] == TVRC_SETTINGS_DEVICES) {
+        debug ("onObserved, TVRC_SETTINGS_DEVICES: " + subject["value"]);
+        this._uuids = JSON.parse(subject["value"]);
+      }
     }
   },
 
@@ -171,27 +206,51 @@ this.TVRemoteControlService = {
                     .getService(Components.interfaces.nsIUUIDGenerator);
     var uuid = uuidGenerator.generateUUID();
     var uuidString = uuid.toString();
-    this._uuids.set (uuidString, (new Date().getTime())+ 90*24*60*60*1000);
+    var timeStamp = ((new Date().getTime())+ 90*24*60*60*1000).toString();
+    var dic = {};
+    var lock = SettingsService.createLock();
+    var uuids = this._uuids;
+
+    let callback = {
+      handle: function(name, result) {
+      },
+
+      handleError: function(name) {
+        debug ("error set:" + name);
+      },
+    };
+
+    dic[uuidString] = timeStamp;
+    uuids[uuidString] = timeStamp;
+    lock.set(TVRC_SETTINGS_DEVICES, JSON.stringify(uuids), callback, null);
+
+    return dic;
   },
 
   _isValidUUID: function(uuid) {
-    return this._uuids.has(uuid);
+    return (uuid in this._uuids);
   },
 
   _updateUUID: function(uuid, timestamp) {
-    if (this.uuids.has(uuid)) {
-      this._uuids.set(uuid, timestamp);
+    if (uuid in this._uuids) {
+      this._uuids[uuid] = timestamp;
     }
   },
 
   _clearUUID: function(uuid) {
-    if (this._uuids.has(uuid)) {
-      this._uuids.delete(uuid);
+    if (uuid in this._uuids) {
+      var lock = SettingsService.createLock();
+
+      delete this._uuids[uuid];
+      lock.set(TVRC_SETTINGS_DEVICES, JSON.stringify(this._uuids), null, null);
     }
   },
 
   _clearAllUUID: function() {
-    this._uuids.clear();
+    var lock = SettingsService.createLock();
+
+    this._uuids = {};
+    lock.set(TVRC_SETTINGS_DEVICES, JSON.stringify(this._uuids), null, null);
   },
 
   _zeroFill: function(number, width) {
