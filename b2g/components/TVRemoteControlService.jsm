@@ -48,7 +48,7 @@ const ScriptableInputStream = CC("@mozilla.org/scriptableinputstream;1",
 var gThreadManager = null;
 
 const TVRC_STATIC_BLACKLIST = ['/client.html', '/pairing.html'];
-const TVRC_SJS = ['/ajax.sjs', '/pairing.sjs'];
+const TVRC_SJS = ['/client.sjs', '/pairing.sjs'];
 
 // For b2g-destkop, you need to fill ip address here to start http server correctly
 const DEFAULT_IP_ADDR = "10.247.26.32";
@@ -276,7 +276,6 @@ this.TVRemoteControlService = {
   },
 
   _isValidPath: function(path) {
-    debug (path);
     if (path == '/') return true;
     if (path.indexOf("..") > -1) return false;
 
@@ -330,7 +329,10 @@ this.TVRemoteControlService = {
     var offset = 0;
     var count = fis.available();
 
-    response.setHeader("Content-Type", "text/html;charset=utf-8", false);
+    if (path.endsWith("css"))
+      response.setHeader("Content-Type", "text/css;charset=utf-8", false);
+    else
+      response.setHeader("Content-Type", "text/html;charset=utf-8", false);
     //maybeAddHeaders(file, metadata, response);
     response.setHeader("Content-Length", "" + count, false);
 
