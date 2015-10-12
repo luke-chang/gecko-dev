@@ -31,6 +31,7 @@ const { classes: Cc, interfaces: Ci, utils: Cu, Constructor: CC } = Components;
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+const { SystemAppProxy } = Cu.import("resource://gre/modules/SystemAppProxy.jsm");
 
 const FileInputStream = CC("@mozilla.org/network/file-input-stream;1",
                           "nsIFileInputStream",
@@ -81,6 +82,7 @@ function NS_ASSERT(cond, msg)
 this.TVRemoteControlService = {
   _httpServer: null,
   _state: {},
+  _sharedState: {},
   _pin: null,
   _uuids: null, // uuid : expire_timestamp
 
@@ -116,15 +118,19 @@ this.TVRemoteControlService = {
     var observerService = Components.classes["@mozilla.org/observer-service;1"]
                       .getService(Components.interfaces.nsIObserverService);
     observerService.addObserver (this, "mozsettings-changed", false);
+
+    SystemAppProxy.addEventListener("mozContentEvent", this);
   },
 
   start: function(ipaddr, port) {
     debug ("start");
     var _port = port ? port : DEFAULT_PORT;
+    var lock = SettingsService.createLock();
 
     if (ipaddr) {
       this._httpServer.identity.add ("http", ipaddr, _port);
       this._httpServer.start(_port);
+      lock.set(TVRC_SETTINGS_SERVERIP, ipaddr, null, null);
     } else {
       var nm;
       try {
@@ -140,6 +146,7 @@ this.TVRemoteControlService = {
 
           this._httpServer.identity.add ("http", ipAddresses["value"], _port);
           this._httpServer.start(_port);
+          lock.set(TVRC_SETTINGS_SERVERIP, "http://" + ipAddresses["value"] + ":" + _port, null, null);
         } else {
           var observerService = Components.classes["@mozilla.org/observer-service;1"]
                       .getService(Components.interfaces.nsIObserverService);
@@ -151,6 +158,7 @@ this.TVRemoteControlService = {
 
         this._httpServer.identity.add ("http", _ipaddr, _port);
         this._httpServer.start(_port);
+        lock.set(TVRC_SETTINGS_SERVERIP, "http://" + _ipaddr + ":" + _port, null, null);
       }
     }
   },
@@ -165,6 +173,7 @@ this.TVRemoteControlService = {
       let ipAddresses = {};
       let prefixs = {};
       let numOfIpAddresses = activeNetwork.getAddresses (ipAddresses, prefixs);
+      var lock = SettingsService.createLock();
 
       var observerService = Components.classes["@mozilla.org/observer-service;1"]
                       .getService(Components.interfaces.nsIObserverService);
@@ -180,6 +189,23 @@ this.TVRemoteControlService = {
         debug ("onObserved, TVRC_SETTINGS_DEVICES: " + subject["value"]);
         this._uuids = JSON.parse(subject["value"]);
       }
+    }
+  },
+
+  handleEvent: function UP_handleEvent(evt) {
+    if (evt.type !== "mozContentEvent") {
+      return;
+    }
+
+    let detail = evt.detail;
+    if (!detail) {
+      return;
+    }
+
+    switch (detail.type) {
+      case "control-mode-changed":
+        this._setSharedState("isCursorMode", detail.detail.cursor.toString());
+        break;
     }
   },
 
@@ -199,6 +225,21 @@ this.TVRemoteControlService = {
     if (!(path in state))
       state[path] = {};
     state[path][k] = v;
+  },
+
+  _getSharedState: function(k)
+  {
+    var state = this._sharedState;
+    if (k in state)
+      return state[k];
+    return "";
+  },
+
+  _setSharedState: function(k, v)
+  {
+    if (typeof v !== "string")
+      throw new Error("non-string value passed");
+    this._sharedState[k] = v;
   },
 
   _generateUUID: function() {
@@ -283,7 +324,7 @@ this.TVRemoteControlService = {
     try {
       var ioService = Components.classes["@mozilla.org/network/io-service;1"]
                     .getService(Components.interfaces.nsIIOService);
-      var channel = ioService.newChannel("app://remote-control.gaiamobile.org/client" + path, null, null);
+      var channel = ioService.newChannel("app://remote-control-client.gaiamobile.org" + path, null, null);
       var fis = channel.open();
       fis.close();
       return true;
@@ -323,7 +364,7 @@ this.TVRemoteControlService = {
     var ioService = Components.classes["@mozilla.org/network/io-service;1"]
                     .getService(Components.interfaces.nsIIOService);
     var path = this._checkPathFromCookie(request);
-    var channel = ioService.newChannel("app://remote-control.gaiamobile.org/client" + path, null, null);
+    var channel = ioService.newChannel("app://remote-control-client.gaiamobile.org" + path, null, null);
     var fis = channel.open();
 
     var offset = 0;
@@ -440,6 +481,14 @@ this.TVRemoteControlService = {
       s.importFunction(function setState(k, v)
       {
         self._setState(path, k, v);
+      });
+      s.importFunction(function getSharedState(k)
+      {
+        return self._getSharedState(k);
+      });
+      s.importFunction(function setSharedState(k, v)
+      {
+        self._setSharedState(k, v);
       });
 
       try

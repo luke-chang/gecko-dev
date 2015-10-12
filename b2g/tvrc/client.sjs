@@ -21,33 +21,41 @@ function handleClickEvent (event)
 {
   let type = 'navigator:browser';
   let shell = Services.wm.getMostRecentWindow(type);
-  let document = shell.document;
-  let systemApp = document.getElementsByTagName("HTML:IFRAME")[0];
-  var domWindowUtils = shell.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
+  var utils = shell.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
                      .getInterface(Components.interfaces.nsIDOMWindowUtils);
+  var isCursorMode = false;
 
-  var x = isNaN(getState("x")) ? 0 : parseInt(getState("x"));
-  var y = isNaN(getState("y")) ? 0 : parseInt(getState("y"));
+  isCursorMode = (getSharedState("isCursorMode") == "true");
+  if(isCursorMode) {
+    var x = isNaN(getState("x")) ? 0 : parseInt(getState("x"));
+    var y = isNaN(getState("y")) ? 0 : parseInt(getState("y"));
 
-  ["mousedown",  "mouseup"].forEach(function(mouseType) {
-    // On b2g-desktop, we should subtract diff from window to screen position
-    domWindowUtils.sendMouseEvent (mouseType, x, y, 0, 1, 0);
-   });
+    ["mousedown",  "mouseup"].forEach(function(mouseType) {
+      utils.sendMouseEvent (mouseType, x, y, 0, 1, 0);
+     });
+
+     if (event.type == "dblclick") {
+       ["mousedown",  "mouseup"].forEach(function(mouseType) {
+         utils.sendMouseEvent (mouseType, x, y, 0, 2, 0);
+       });   
+     }
+  } else {
+    handleKeyboardEvent ('DOM_VK_RETURN');
+  }
 }
 
 function handleTouchEvent (event)
 {
   let type = 'navigator:browser';
   let shell = Services.wm.getMostRecentWindow(type);
-  let document = shell.document;
-  let systemApp = document.getElementsByTagName("HTML:IFRAME")[0];
-  var domWindowUtils = shell.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
+  var utils = shell.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
                      .getInterface(Components.interfaces.nsIDOMWindowUtils);
 
   var x = isNaN(getState("x")) ? 0 : parseInt(getState("x"));
   var y = isNaN(getState("y")) ? 0 : parseInt(getState("y"));
   var startX = 0;
   var startY = 0;
+  var isCursorMode = false;
 
   switch (event.type) {
     case "touchstart":
@@ -78,14 +86,65 @@ function handleTouchEvent (event)
   setState ("x", x.toString());
   setState ("y", y.toString());
 
-  domWindowUtils.sendMouseEvent ("mousemove", x, y, 0, 0, 0);
-  // Use SystemAppProxy send
-  SystemAppProxy._sendCustomEvent(REMOTE_CONTROL_EVENT, {
-    action: 'move-cursor',
-    state: event.type.substring(5),
-    x: x,
-    y: y
-  });
+  isCursorMode = (getSharedState("isCursorMode") == "true");
+  if(isCursorMode) {
+    utils.sendMouseEvent ("mousemove", x, y, 0, 0, 0);
+
+    // TODO: control native mouse cursor, remove gaia mouse cursor
+    // Use SystemAppProxy send
+    SystemAppProxy._sendCustomEvent(REMOTE_CONTROL_EVENT, {
+      action: 'move-cursor',
+      state: event.type.substring(5),
+      x: x,
+      y: y
+    });
+  }
+  else {
+    // Send spatial navigation key, switch when current mode is ready
+    if (event.type == "touchend") {
+      switch (detail.swipe) {
+        case "up":
+        case "down":
+        case "left":
+        case "right":
+          handleKeyboardEvent ('DOM_VK_' + detail.swipe.toUpperCase());
+          break;
+      }
+    }
+  }
+}
+
+function handleScrollEvent (event)
+{
+  let type = 'navigator:browser';
+  let shell = Services.wm.getMostRecentWindow(type);
+  var utils = shell.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
+                     .getInterface(Components.interfaces.nsIDOMWindowUtils);
+
+  var x = isNaN(getState("x")) ? 0 : parseInt(getState("x"));
+  var y = isNaN(getState("y")) ? 0 : parseInt(getState("y"));
+  var sy = isNaN(getState("sy")) ? 0 : parseInt(getState("sy"));
+  var isCursorMode = false;
+
+  let detail = event.detail;
+
+  isCursorMode = (getSharedState("isCursorMode") == "true");
+  if(isCursorMode) {
+    utils.sendWheelEvent (x, y, 
+      0, detail.dy - sy , 0, shell.WheelEvent.DOM_DELTA_LINE,
+      0, 0, 0, 0);
+
+    setState ("sy", detail.dy.toString());
+  } else {
+    if (event.type == "touchend") {
+      switch (detail.swipe) {
+        case "up":
+        case "down":
+          handleKeyboardEvent ('DOM_VK_PAGE_' + detail.swipe.toUpperCase());
+          break;
+      }
+    }
+  }
 }
 
 function handleKeyboardEvent (keyCodeName)
@@ -95,15 +154,21 @@ function handleKeyboardEvent (keyCodeName)
   const nsIDOMKeyEvent = Ci.nsIDOMKeyEvent;
   let type = "navigator:browser";
   let shell = Services.wm.getMostRecentWindow(type);
-
   var utils = shell.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
                      .getInterface(Components.interfaces.nsIDOMWindowUtils);
 
-  ["keydown",  "keypress", "keyup"].forEach(function(keyType) {
-    var keyCode = nsIDOMKeyEvent[keyCodeName];
-    var modifiers = 0;
-    var happened = utils.sendKeyEvent(keyType, keyCode, 0, modifiers);
-  });
+  var x = isNaN(getState("x")) ? 0 : parseInt(getState("x"));
+  var y = isNaN(getState("y")) ? 0 : parseInt(getState("y"));
+
+  if (keyCodeName == "DOM_VK_CONTEXT_MENU") {
+    utils.sendMouseEvent ("contextmenu", x, y, 0, 0, 0);
+  } else {
+    ["keydown",  "keypress", "keyup"].forEach(function(keyType) {
+      var keyCode = nsIDOMKeyEvent[keyCodeName];
+      var modifiers = 0;
+      var happened = utils.sendKeyEvent(keyType, keyCode, 0, modifiers);
+    });
+  }
 }
 
 function handleInputEvent (detail)
@@ -160,12 +225,19 @@ function handleInputEvent (detail)
   icChangeTimeout = sysApp.setTimeout(icChangeHandler, 1000);
 }
 
+function handleCustomEvent(event)
+{
+  SystemAppProxy._sendCustomEvent(REMOTE_CONTROL_EVENT, {
+    action: event.type,
+    value: event.detail
+  });
+}
+
 function handleRequest(request, response)
 {
   var queryString = decodeURIComponent(request.queryString.replace(/\+/g, "%20"));
 
   response.setHeader("Content-Type", "text/html", false);
-  //response.write(queryString);
 
   // Split JSON header "message="
   var event = JSON.parse(queryString.substring(8));
@@ -173,6 +245,7 @@ function handleRequest(request, response)
   switch (event.type) {
     case "echo":
       debug(event.detail);
+      response.write(queryString);
       break;
     case "keypress":
       handleKeyboardEvent(event.detail);
@@ -183,12 +256,22 @@ function handleRequest(request, response)
       debug(JSON.stringify(event));
       handleTouchEvent (event);
       break;
+    case "scrollstart":
+    case "scrollmove":
+    case "scrollend":
+      debug(JSON.stringify(event));
+      handleScrollEvent (event);
+      break;
     case "click":
+    case "dblclick":
       debug(JSON.stringify(event));
       handleClickEvent (event);
       break;
     case "input":
       handleInputEvent(event.detail);
+      break;
+    case "custom":
+      handleCustomEvent(event);
       break;
   }
 }
