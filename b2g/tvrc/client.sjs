@@ -8,13 +8,19 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 const { SystemAppProxy } = Cu.import("resource://gre/modules/SystemAppProxy.jsm");
 
 const DEBUG = true;
-const REMOTE_CONTROL_EVENT = 'remote-control-event';
+const REMOTE_CONTROL_EVENT = 'mozChromeRemoteControlEvent';
 
 function debug (message)
 {
   if (DEBUG) {
     dump(message + '\n');
   }
+}
+
+function sendChromeEvent(action, details)
+{
+  details.action = action;
+  SystemAppProxy._sendCustomEvent(REMOTE_CONTROL_EVENT, details);
 }
 
 function handleClickEvent (event)
@@ -37,7 +43,7 @@ function handleClickEvent (event)
      if (event.type == "dblclick") {
        ["mousedown",  "mouseup"].forEach(function(mouseType) {
          utils.sendMouseEvent (mouseType, x, y, 0, 2, 0);
-       });   
+       });
      }
   } else {
     handleKeyboardEvent ('DOM_VK_RETURN');
@@ -92,8 +98,7 @@ function handleTouchEvent (event)
 
     // TODO: control native mouse cursor, remove gaia mouse cursor
     // Use SystemAppProxy send
-    SystemAppProxy._sendCustomEvent(REMOTE_CONTROL_EVENT, {
-      action: 'move-cursor',
+    sendChromeEvent('move-cursor', {
       state: event.type.substring(5),
       x: x,
       y: y
@@ -130,7 +135,7 @@ function handleScrollEvent (event)
 
   isCursorMode = (getSharedState("isCursorMode") == "true");
   if(isCursorMode) {
-    utils.sendWheelEvent (x, y, 
+    utils.sendWheelEvent (x, y,
       0, detail.dy - sy , 0, shell.WheelEvent.DOM_DELTA_LINE,
       0, 0, 0, 0);
 
@@ -175,6 +180,11 @@ function handleInputEvent (detail)
 {
   debug('input: ' + JSON.stringify(detail));
 
+  if (getState("inputPending") == "true") {
+    debug("ERROR: Has a pending input request!");
+    return;
+  }
+
   let sysApp = SystemAppProxy.getFrame().contentWindow;
   let mozIM = sysApp.navigator.mozInputMethod;
   let icChangeTimeout = null;
@@ -186,40 +196,19 @@ function handleInputEvent (detail)
       icChangeTimeout = null;
     }
 
-    let inputcontext = mozIM.inputcontext;
-    if (inputcontext) {
-      if (detail.clear) {
-        lengthBeforeCursor = inputcontext.textBeforeCursor.length;
-        lengthAfterCursor = inputcontext.textAfterCursor.length;
-        inputcontext.deleteSurroundingText(
-          -1 * lengthBeforeCursor,
-          lengthBeforeCursor + lengthAfterCursor
-        );
-      }
-
-      if (detail.string) {
-        inputcontext.setComposition(detail.string);
-        inputcontext.endComposition(detail.string);
-      }
-
-      if (detail.keycode) {
-        inputcontext.sendKey(detail.keycode);
-      }
+    if (mozIM.inputcontext) {
+      sendChromeEvent('input-string', detail);
     } else {
       debug('ERROR: No inputcontext!');
     }
 
     mozIM.setActive(false);
-    SystemAppProxy._sendCustomEvent(REMOTE_CONTROL_EVENT, {
-      action: 'grant-input',
-      value: false
-    });
+    sendChromeEvent('grant-input', { value: false });
+    setState("inputPending", "");
   }
 
-  SystemAppProxy._sendCustomEvent(REMOTE_CONTROL_EVENT, {
-    action: 'grant-input',
-    value: true
-  });
+  setState("inputPending", "true");
+  sendChromeEvent('grant-input', { value: true });
   mozIM.setActive(true);
   mozIM.addEventListener('inputcontextchange', icChangeHandler);
   icChangeTimeout = sysApp.setTimeout(icChangeHandler, 1000);
@@ -227,10 +216,7 @@ function handleInputEvent (detail)
 
 function handleCustomEvent(event)
 {
-  SystemAppProxy._sendCustomEvent(REMOTE_CONTROL_EVENT, {
-    action: event.type,
-    value: event.detail
-  });
+  sendChromeEvent(event.type, event.detail);
 }
 
 function handleRequest(request, response)
